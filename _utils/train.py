@@ -7,16 +7,18 @@ import oobe
 from functools import partial
 from paddlenlp.data import Stack, Tuple, Pad
 from paddlenlp.datasets import MapDataset
+from paddle.optimizer.lr import StepDecay
 
 from __utils import convert_example, read_vocab, write_results
 
-# Process
-USEGPU = oobe.UseGPU()
+# Process now on Linux
+USEGPU = True
+# USEGPU = oobe.UseGPU()
 
 # load()
-train_ds = newsData.NewsData(oobe.FileConv(r'readonly\train.txt'), mode = 'train')
-dev_ds = newsData.NewsData(oobe.FileConv(r'readonly\dev.txt'), mode = 'dev')
-test_ds = newsData.NewsData(oobe.FileConv(r'readonly\test.txt'), mode = 'test')
+train_ds = newsData.NewsData('/home/featurize/NewsSort/_utils/readonly/train.txt', mode = 'train')
+dev_ds = newsData.NewsData('/home/featurize/NewsSort/_utils/readonly/dev.txt', mode = 'dev')
+test_ds = newsData.NewsData('/home/featurize/NewsSort/_utils/readonly/test.txt', mode = 'test')
 
 def create_dataloader(
     dataset: paddle.io.Dataset,
@@ -53,10 +55,10 @@ def create_dataloader(
 
     return dataloader
 
-vocab = read_vocab(oobe.FileConv(r'train\vocab.txt'))
-stopwords = read_vocab(oobe.FileConv(r'readonly\stopwords_baidu.txt'))
+vocab = read_vocab('/home/featurize/NewsSort/_utils/train/vocab.txt')
+stopwords = read_vocab('/home/featurize/NewsSort/_utils/readonly/stopwords_baidu.txt')
 batchsize = 128
-epochs = 2
+epochs = 2 # Training Rounds
 trans_fn = partial(convert_example, vocab = vocab, stop_words = stopwords, is_test = False)
 
 batchify_fn = lambda samples, fn = Tuple(
@@ -77,7 +79,7 @@ dev_loader = create_dataloader(
     dev_ds,
     trans_fn = trans_fn,
     batch_size = batchsize,
-    mode = 'validation', # mode = 'dev'???
+    mode = 'validation',
     use_gpu = USEGPU,
     batchify_fn = batchify_fn
 )
@@ -85,8 +87,10 @@ dev_loader = create_dataloader(
 # Train
 
 class LSTMModel(nn.Layer):
-    def __init__(self, vocab_size, num_classes, emb_dim = 128, padding_idx = 0, lstm_hidden_size = 198, direction = 'forward', 
-                 lstm_layers = 1, dropout_rate = 0.0, pooling_type = None, fc_hidden_size = 96):
+    def __init__(self, vocab_size, num_classes, emb_dim = 128, padding_idx = 0,
+                 lstm_hidden_size = 80, direction = 'bidirectional',
+                 lstm_layers = 1, dropout_rate = 0, pooling_type = None,
+                 fc_hidden_size = 96):
         super().__init__()
 
         # word_id -> word_embedding
@@ -101,7 +105,6 @@ class LSTMModel(nn.Layer):
             emb_dim,
             lstm_hidden_size,
             num_layers = lstm_layers,
-            # ?
             direction = direction,
             dropout = dropout_rate,
             pooling_type = pooling_type
@@ -131,9 +134,39 @@ model = paddle.Model(model)
 
 # Real Train
 
-optimizer = paddle.optimizer.Adam(parameters = model.parameters(), learning_rate = 5e-4)
+learningRate = 5e-4
+# learningRate = StepDecay(learning_rate = 5e-4, step_size = 100, gamma = 0.9)
+
+optimizer = paddle.optimizer.Adam(parameters = model.parameters(), learning_rate = learningRate, weight_decay = 1e-4)
 criterion = paddle.nn.CrossEntropyLoss()
 metric = paddle.metric.Accuracy()
 
 model.prepare(optimizer, criterion, metric)
-model.fit(train_loader, dev_loader, epochs = epochs, save_dir = oobe.FileConv('log'))
+model.fit(train_loader, dev_loader, epochs = epochs, save_dir = '/home/featurize/NewsSort/_utils/log')
+
+# Test
+import numpy as np
+
+test_batchify_fn = lambda samples, fn = Tuple(
+    Pad(axis = 0, pad_val = vocab.get('[PAD]', 0)),
+    Stack(dtype = "int64"),
+): [data for data in fn(samples)]
+
+test_loader = create_dataloader(
+    test_ds,
+    trans_fn = partial(convert_example, vocab = vocab, stop_words = stopwords, is_test = True),
+    batch_size = batchsize,
+    mode = 'test',
+    use_gpu = USEGPU,
+    batchify_fn = test_batchify_fn)
+
+results = model.predict(test_loader)
+inverse_lable_map = {value:key for key, value in test_ds.label_map.items()}
+all_labels = []
+
+for batch_results in results[0]:
+    label_ids = np.argmax(batch_results, axis = 1).tolist()
+    labels = [inverse_lable_map[label_id] for label_id in label_ids]
+    all_labels.extend(labels)
+
+write_results(all_labels, '/home/featurize/NewsSort/_utils/result.txt')

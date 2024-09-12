@@ -1,6 +1,6 @@
 # Important
 
-ABSOLUTE_PATH = r'D:\Repositories\NewsSort\_utils'
+ABSOLUTE_PATH = r'\NewsSort\_utils'
 
 def UseGPU() -> bool:
     Y = input('是否使用GPU？(y/Y): ')

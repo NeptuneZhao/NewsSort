@@ -1,0 +1,469 @@
+试题说明
+基于THUCNews数据集的文本分类， THUCNews是根据新浪新闻RSS订阅频道2005~2011年间的历史数据筛选过滤生成，包含74万篇新闻文档，参赛者需要根据新闻标题的内容用算法来判断该新闻属于哪一类别。
+
+数据说明
+THUCNews是根据新浪新闻RSS订阅频道2005~2011年间的历史数据筛选过滤生成，包含74万篇新闻文档（2.19 GB），均为UTF-8纯文本格式。在原始新浪新闻分类体系的基础上，重新整合划分出14个候选分类类别：财经、彩票、房产、股票、家居、教育、科技、社会、时尚、时政、体育、星座、游戏、娱乐。
+
+训练集，验证集按照“原文标题+\t+标签”的格式抽取出来，可以直接根据新闻标题进行文本分类任务，希望答题者能够给出自己的解决方案。
+
+测试集仅提供“原文标题”，答题者需要对其预测相应的分类类别。
+
+训练集：data/train.txt
+
+验证集：data/dev.txt
+
+测试集：data/test.txt
+
+提交答案
+考试提交，需要提交模型代码项目版本和结果文件。结果文件为TXT文件格式，命名为result.txt，文件内的字段需要按照指定格式写入。
+
+1.每个类别的行数和测试集原始数据行数应一一对应，不可乱序
+
+2.输出结果应检查是否为83599行数据，否则成绩无效
+
+3.输出结果文件命名为result.txt，一行一个类别，样例如下：
+
+···
+
+游戏
+
+财经
+
+时政
+
+股票
+
+家居
+
+科技 ···
+
+基线系统
+数据处理
+构建词汇表
+在搭建模型之前，我们需要对整体语料构造词表。通过切词统计词频，去除低频词，从而完成构造词表。我们使用jieba作为中文切词工具。
+
+停用词表，我们从网上直接获取：https://github.com/goto456/stopwords/blob/master/baidu_stopwords.txt
+
+AI Studio平台默认安装了Paddle和PaddleNLP，并定期更新版本。 如需手动更新Paddle，可参考飞桨安装说明，安装相应环境下最新版飞桨框架。
+
+使用如下命令确保安装最新版PaddleNLP：
+
+In [2]
+# !pip install --upgrade paddlenlp==2.0.8 -i https://pypi.org/simple
+Collecting paddlenlp
+  Downloading https://files.pythonhosted.org/packages/b0/7d/6c24cda54d018d350ee342f715523ade7871660444ed95f3d3e753d6f388/paddlenlp-2.0.8-py3-none-any.whl (571kB)
+     |████████████████████████████████| 573kB 10kB/s eta 0:00:012
+Requirement already satisfied, skipping upgrade: colorlog in /opt/conda/envs/python35-paddle120-env/lib/python3.7/site-packages (from paddlenlp) (4.1.0)
+Requirement already satisfied, skipping upgrade: colorama in /opt/conda/envs/python35-paddle120-env/lib/python3.7/site-packages (from paddlenlp) (0.4.4)
+Requirement already satisfied, skipping upgrade: seqeval in /opt/conda/envs/python35-paddle120-env/lib/python3.7/site-packages (from paddlenlp) (1.2.2)
+Requirement already satisfied, skipping upgrade: jieba in /opt/conda/envs/python35-paddle120-env/lib/python3.7/site-packages (from paddlenlp) (0.42.1)
+Requirement already satisfied, skipping upgrade: multiprocess in /opt/conda/envs/python35-paddle120-env/lib/python3.7/site-packages (from paddlenlp) (0.70.11.1)
+Requirement already satisfied, skipping upgrade: h5py in /opt/conda/envs/python35-paddle120-env/lib/python3.7/site-packages (from paddlenlp) (2.9.0)
+Requirement already satisfied, skipping upgrade: scikit-learn>=0.21.3 in /opt/conda/envs/python35-paddle120-env/lib/python3.7/site-packages (from seqeval->paddlenlp) (0.24.2)
+Requirement already satisfied, skipping upgrade: numpy>=1.14.0 in /opt/conda/envs/python35-paddle120-env/lib/python3.7/site-packages (from seqeval->paddlenlp) (1.20.3)
+Requirement already satisfied, skipping upgrade: dill>=0.3.3 in /opt/conda/envs/python35-paddle120-env/lib/python3.7/site-packages (from multiprocess->paddlenlp) (0.3.3)
+Requirement already satisfied, skipping upgrade: six in /opt/conda/envs/python35-paddle120-env/lib/python3.7/site-packages (from h5py->paddlenlp) (1.15.0)
+Requirement already satisfied, skipping upgrade: joblib>=0.11 in /opt/conda/envs/python35-paddle120-env/lib/python3.7/site-packages (from scikit-learn>=0.21.3->seqeval->paddlenlp) (0.14.1)
+Requirement already satisfied, skipping upgrade: scipy>=0.19.1 in /opt/conda/envs/python35-paddle120-env/lib/python3.7/site-packages (from scikit-learn>=0.21.3->seqeval->paddlenlp) (1.6.3)
+Requirement already satisfied, skipping upgrade: threadpoolctl>=2.0.0 in /opt/conda/envs/python35-paddle120-env/lib/python3.7/site-packages (from scikit-learn>=0.21.3->seqeval->paddlenlp) (2.1.0)
+Installing collected packages: paddlenlp
+  Found existing installation: paddlenlp 2.0.7
+    Uninstalling paddlenlp-2.0.7:
+      Successfully uninstalled paddlenlp-2.0.7
+Successfully installed paddlenlp-2.0.8
+In [1]
+import os
+import time
+from collections import Counter
+from itertools import chain
+
+import jieba
+
+
+def sort_and_write_words(all_words, file_path):
+    words = list(chain(*all_words))
+    words_vocab = Counter(words).most_common()
+    with open(file_path, "w", encoding="utf8") as f:
+        f.write('[UNK]\n[PAD]\n')
+        # filter the count of words below 5
+        # 过滤低频词，词频<5
+        for word, num in words_vocab:
+            if num < 5:
+                continue
+            f.write(word + "\n")
+
+
+(root, directory, files), = list(os.walk("./work/data"))
+all_words = []
+for file_name in files:
+    with open(os.path.join(root, file_name), "r", encoding="utf8") as f:
+        for line in f:
+            if file_name in ["train.txt", "dev.txt"]:
+                text, label = line.strip().split("\t")
+            elif file_name == "test.txt":
+                text = line.strip()
+            else:
+                continue
+            words = jieba.lcut(text)
+            words = [word for word in words if word.strip() !='']
+            all_words.append(words)
+
+# 写入词表
+sort_and_write_words(all_words, "work/data/vocab.txt")
+Building prefix dict from the default dictionary ...
+Dumping model to file cache /tmp/jieba.cache
+Loading model cost 0.938 seconds.
+Prefix dict has been built successfully.
+In [2]
+# 词汇表大小
+!wc -l work/data/vocab.txt
+# 停用词表大小
+!wc -l work/data/stop_words.txt
+79441 work/data/vocab.txt
+1395 work/data/stop_words.txt
+加载自定义数据集
+构建词汇表完毕之后，我们可以加载自定义数据集。加载自定义数据集可以通过继承paddle.io.Dataset完成。
+
+更多自定义数据集方式参考：自定义数据集
+
+同时，PaddleNLP提供了文本分类、序列标注、阅读理解等多种任务的常用数据集，一键即可加载，详细信息参考数据集：
+
+In [3]
+import paddle
+
+class NewsData(paddle.io.Dataset):
+    def __init__(self, data_path, mode="train"):
+        is_test = True if mode == "test" else False
+        self.label_map = { item:index for index, item in enumerate(self.label_list)}
+        self.examples = self._read_file(data_path, is_test)
+
+    def _read_file(self, data_path, is_test):
+        examples = []
+        with open(data_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                if is_test:
+                    text = line.strip()
+                    examples.append((text,))
+                else:
+                    text, label = line.strip('\n').split('\t')
+                    label = self.label_map[label]
+                    examples.append((text, label))
+        return examples
+
+    def __getitem__(self, idx):
+        return self.examples[idx]
+
+    def __len__(self):
+        return len(self.examples)
+
+    @property
+    def label_list(self):
+        return ['财经', '彩票', '房产', '股票', '家居', '教育', '科技', '社会', '时尚', '时政', '体育', '星座', '游戏', '娱乐']
+In [4]
+# Loads dataset.
+train_ds = NewsData("work/data/train.txt", mode="train")
+dev_ds = NewsData("work/data/dev.txt", mode="dev")
+test_ds = NewsData("work/data/test.txt", mode="test")
+
+print("Train data:")
+for text, label in train_ds[:5]:
+    print(f"Text: {text}; Label ID {label}")
+
+print()
+print("Test data:")
+for text, in test_ds[:5]:
+    print(f"Text: {text}")
+Train data:
+Text: 网易第三季度业绩低于分析师预期; Label ID 6
+Text: 巴萨1年前地狱重现这次却是天堂 再赴魔鬼客场必翻盘; Label ID 10
+Text: 美国称支持向朝鲜提供紧急人道主义援助; Label ID 9
+Text: 增资交银康联 交行夺参股险商首单; Label ID 3
+Text: 午盘：原材料板块领涨大盘; Label ID 3
+
+Test data:
+Text: 北京君太百货璀璨秋色 满100省353020元
+Text: 教育部：小学高年级将开始学习性知识
+Text: 专业级单反相机 佳能7D单机售价9280元
+Text: 星展银行起诉内地客户 银行强硬客户无奈
+Text: 脱离中国的实际 强压人民币大幅升值只能是梦想
+读入数据
+加载数据集之后，还需要将原始文本转化为word id，读入数据。
+
+PaddleNLP提供了许多关于NLP任务中构建有效的数据pipeline的常用API
+
+API	简介
+paddlenlp.data.Stack	堆叠N个具有相同shape的输入数据来构建一个batch
+paddlenlp.data.Pad	将长度不同的多个句子padding到统一长度，取N个输入数据中的最大长度
+paddlenlp.data.Tuple	将多个batchify函数包装在一起
+更多数据处理操作详见： https://github.com/PaddlePaddle/PaddleNLP/blob/develop/docs/data.md
+
+In [5]
+from paddlenlp.data import Stack, Pad, Tuple
+a = [1, 2, 3, 4]
+b = [3, 4, 5, 6]
+c = [5, 6, 7, 8]
+result = Stack()([a, b, c])
+print("Stacked Data: \n", result)
+print()
+
+a = [1, 2, 3, 4]
+b = [5, 6, 7]
+c = [8, 9]
+result = Pad(pad_val=0)([a, b, c])
+print("Padded Data: \n", result)
+print()
+
+data = [
+        [[1, 2, 3, 4], [1]],
+        [[5, 6, 7], [0]],
+        [[8, 9], [1]],
+       ]
+batchify_fn = Tuple(Pad(pad_val=0), Stack())
+ids, labels = batchify_fn(data)
+print("ids: \n", ids)
+print()
+print("labels: \n", labels)
+print()
+Stacked Data: 
+ [[1 2 3 4]
+ [3 4 5 6]
+ [5 6 7 8]]
+
+Padded Data: 
+ [[1 2 3 4]
+ [5 6 7 0]
+ [8 9 0 0]]
+
+ids: 
+ [[1 2 3 4]
+ [5 6 7 0]
+ [8 9 0 0]]
+
+labels: 
+ [[1]
+ [0]
+ [1]]
+
+本基线将对数据作以下处理：
+
+将原始数据处理成模型可以读入的格式。首先使用jieba切词，之后将jieba切完后的单词映射词表中单词id。
+
+使用paddle.io.DataLoader接口多线程异步加载数据。
+
+In [6]
+from functools import partial
+
+import paddlenlp
+from paddlenlp.datasets import MapDataset
+
+from utils import convert_example, read_vocab, write_results
+
+
+def create_dataloader(dataset,
+                      trans_fn=None,
+                      mode='train',
+                      batch_size=1,
+                      use_gpu=False,
+                      batchify_fn=None):
+    if trans_fn:
+        dataset = MapDataset(dataset)
+        dataset = dataset.map(trans_fn)
+
+    if mode == 'train' and use_gpu:
+        sampler = paddle.io.DistributedBatchSampler(
+            dataset=dataset, batch_size=batch_size, shuffle=True)
+    else:
+        shuffle = True if mode == 'train' else False
+        sampler = paddle.io.BatchSampler(
+            dataset=dataset, batch_size=batch_size, shuffle=shuffle)
+    dataloader = paddle.io.DataLoader(
+        dataset,
+        batch_sampler=sampler,
+        return_list=True,
+        collate_fn=batchify_fn)
+    return dataloader
+In [7]
+vocab = read_vocab("work/data/vocab.txt")
+stop_words = read_vocab("work/data/stop_words.txt")
+
+batch_size = 128
+epochs = 2
+
+trans_fn = partial(convert_example, vocab=vocab, stop_words=stop_words, is_test=False)
+batchify_fn = lambda samples, fn=Tuple(
+    Pad(axis=0, pad_val=vocab.get('[PAD]', 0)),  # input_ids
+    Stack(dtype="int64"),  # seq len
+    Stack(dtype="int64")  # label
+): [data for data in fn(samples)]
+train_loader = create_dataloader(
+    train_ds,
+    trans_fn=trans_fn,
+    batch_size=batch_size,
+    mode='train',
+    use_gpu=True,
+    batchify_fn=batchify_fn)
+dev_loader = create_dataloader(
+    dev_ds,
+    trans_fn=trans_fn,
+    batch_size=batch_size,
+    mode='validation',
+    use_gpu=True,
+    batchify_fn=batchify_fn)
+组网、配置、训练
+定义模型结构
+读入了数据之后，即可定义模型结构。此处，我们选择BiLSTM作为baseline。
+
+PaddleNLP提供了序列化建模模块paddlenlp.seq2vec模块，该模块可以将文本抽象成一个携带语义的文本向量。
+
+关于seq2vec模块更多信息参考：paddlenlp.seq2vec是什么？快来看看如何用它完成情感分析任务
+
+本基线模型选用LSTMencoder搭建一个BiLSTM模型用于文本分类任务。
+
+paddle.nn.Embedding组建word-embedding层
+paddlenlp.seq2vec.LSTMEncoder组建句子建模层
+paddle.nn.Linear构造二分类器
+In [8]
+import paddle.nn as nn
+import paddle.nn.functional as F
+
+class LSTMModel(nn.Layer):
+    def __init__(self,
+                 vocab_size,
+                 num_classes,
+                 emb_dim=128,
+                 padding_idx=0,
+                 lstm_hidden_size=198,
+                 direction='forward',
+                 lstm_layers=1,
+                 dropout_rate=0.0,
+                 pooling_type=None,
+                 fc_hidden_size=96):
+        super().__init__()
+
+        # 首先将输入word id 查表后映射成 word embedding
+        self.embedder = nn.Embedding(
+            num_embeddings=vocab_size,
+            embedding_dim=emb_dim,
+            padding_idx=padding_idx)
+
+        # 将word embedding经过LSTMEncoder变换到文本语义表征空间中
+        self.lstm_encoder = paddlenlp.seq2vec.LSTMEncoder(
+            emb_dim,
+            lstm_hidden_size,
+            num_layers=lstm_layers,
+            direction=direction,
+            dropout=dropout_rate,
+            pooling_type=pooling_type)
+
+        # LSTMEncoder.get_output_dim()方法可以获取经过encoder之后的文本表示hidden_size
+        self.fc = nn.Linear(self.lstm_encoder.get_output_dim(), fc_hidden_size)
+
+        # 最后的分类器
+        self.output_layer = nn.Linear(fc_hidden_size, num_classes)
+
+    def forward(self, text, seq_len):
+        # Shape: (batch_size, num_tokens, embedding_dim)
+        embedded_text = self.embedder(text)
+
+        # Shape: (batch_size, num_tokens, num_directions*lstm_hidden_size)
+        # num_directions = 2 if direction is 'bidirectional' else 1
+        text_repr = self.lstm_encoder(embedded_text, sequence_length=seq_len)
+
+
+        # Shape: (batch_size, fc_hidden_size)
+        fc_out = paddle.tanh(self.fc(text_repr))
+
+        # Shape: (batch_size, num_classes)
+        logits = self.output_layer(fc_out)
+        return logits
+
+model= LSTMModel(
+        len(vocab),
+        len(train_ds.label_list),
+        direction='bidirectional',
+        padding_idx=vocab['[PAD]'])
+model = paddle.Model(model)
+W0815 19:23:29.333402    98 device_context.cc:404] Please NOTE: device: 0, GPU Compute Capability: 7.0, Driver API Version: 12.0, Runtime API Version: 10.1
+W0815 19:23:29.388069    98 device_context.cc:422] device: 0, cuDNN Version: 7.6.
+训练
+数据读入模型构建完毕，定义优化器，选择学习率和评价指标，我们即可开始训练。
+
+根据比赛评价规则，此处选用准确率Accuracy作为评价指标。
+
+模型训练模型之后模型参数会自动保存在ckpt文件夹下。
+
+In [9]
+optimizer = paddle.optimizer.Adam(
+    parameters=model.parameters(), learning_rate=5e-4)
+
+# Defines loss and metric.
+criterion = paddle.nn.CrossEntropyLoss()
+metric = paddle.metric.Accuracy()
+
+model.prepare(optimizer, criterion, metric)
+
+# Starts training and evaluating.
+# model.fit(train_loader, dev_loader, epochs=epochs, save_dir='./ckpt')
+model.fit(train_loader, dev_loader, epochs=epochs, save_dir='./log')
+step 3120/5879 - loss: 0.3274 - acc: 0.8657 - 26ms/step
+...
+save checkpoint at /home/aistudio/log/final
+
+
+预测
+训练模型之后，我们可以利用当前训练的模型对测试集数据进行预测，并写入预测结果至result.txt文件中。
+
+之后将结果文件提交至课程或比赛区即可看到成绩噢！
+
+In [10]
+import numpy as np
+
+test_batchify_fn = lambda samples, fn=Tuple(
+    Pad(axis=0, pad_val=vocab.get('[PAD]', 0)),  # input_ids
+    Stack(dtype="int64"),  # seq len
+): [data for data in fn(samples)]
+test_loader = create_dataloader(
+    test_ds,
+    trans_fn=partial(convert_example, vocab=vocab, stop_words=stop_words, is_test=True),
+    batch_size=batch_size,
+    mode='test',
+    use_gpu=True,
+    batchify_fn=test_batchify_fn)
+
+# Does predict.
+results = model.predict(test_loader)
+inverse_lable_map = {value:key for key, value in test_ds.label_map.items()}
+all_labels = []
+for batch_results in results[0]:
+    label_ids = np.argmax(batch_results, axis=1).tolist()
+    labels = [inverse_lable_map[label_id] for label_id in label_ids]
+    all_labels.extend(labels)
+
+write_results(all_labels, "./result.txt")
+Predict begin...
+step 654/654 [==============================] - ETA: 35s - 54ms/st - ETA: 28s - 45ms/st - ETA: 24s - 37ms/st - ETA: 21s - 33ms/st - ETA: 20s - 31ms/st - ETA: 19s - 30ms/st - ETA: 18s - 29ms/st - ETA: 18s - 29ms/st - ETA: 18s - 28ms/st - ETA: 17s - 28ms/st - ETA: 17s - 27ms/st - ETA: 17s - 27ms/st - ETA: 16s - 27ms/st - ETA: 16s - 27ms/st - ETA: 16s - 26ms/st - ETA: 16s - 26ms/st - ETA: 16s - 26ms/st - ETA: 15s - 26ms/st - ETA: 15s - 26ms/st - ETA: 15s - 26ms/st - ETA: 15s - 25ms/st - ETA: 15s - 26ms/st - ETA: 15s - 26ms/st - ETA: 15s - 25ms/st - ETA: 15s - 25ms/st - ETA: 15s - 25ms/st - ETA: 15s - 25ms/st - ETA: 15s - 25ms/st - ETA: 15s - 25ms/st - ETA: 15s - 26ms/st - ETA: 15s - 25ms/st - ETA: 14s - 25ms/st - ETA: 14s - 25ms/st - ETA: 14s - 25ms/st - ETA: 14s - 26ms/st - ETA: 14s - 26ms/st - ETA: 15s - 26ms/st - ETA: 15s - 26ms/st - ETA: 14s - 26ms/st - ETA: 14s - 26ms/st - ETA: 14s - 26ms/st - ETA: 14s - 26ms/st - ETA: 14s - 26ms/st - ETA: 14s - 26ms/st - ETA: 14s - 26ms/st - ETA: 14s - 25ms/st - ETA: 14s - 25ms/st - ETA: 14s - 25ms/st - ETA: 14s - 25ms/st - ETA: 13s - 25ms/st - ETA: 13s - 25ms/st - ETA: 13s - 25ms/st - ETA: 13s - 25ms/st - ETA: 13s - 25ms/st - ETA: 13s - 25ms/st - ETA: 13s - 25ms/st - ETA: 13s - 25ms/st - ETA: 13s - 25ms/st - ETA: 13s - 25ms/st - ETA: 13s - 25ms/st - ETA: 13s - 25ms/st - ETA: 13s - 25ms/st - ETA: 13s - 25ms/st - ETA: 12s - 25ms/st - ETA: 12s - 25ms/st - ETA: 12s - 25ms/st - ETA: 12s - 25ms/st - ETA: 12s - 24ms/st - ETA: 12s - 24ms/st - ETA: 12s - 24ms/st - ETA: 12s - 24ms/st - ETA: 12s - 24ms/st - ETA: 12s - 24ms/st - ETA: 12s - 24ms/st - ETA: 12s - 24ms/st - ETA: 12s - 24ms/st - ETA: 12s - 24ms/st - ETA: 11s - 24ms/st - ETA: 11s - 24ms/st - ETA: 11s - 24ms/st - ETA: 11s - 24ms/st - ETA: 11s - 24ms/st - ETA: 11s - 24ms/st - ETA: 11s - 24ms/st - ETA: 11s - 24ms/st - ETA: 11s - 24ms/st - ETA: 11s - 24ms/st - ETA: 11s - 24ms/st - ETA: 11s - 24ms/st - ETA: 11s - 24ms/st - ETA: 11s - 24ms/st - ETA: 11s - 24ms/st - ETA: 11s - 24ms/st - ETA: 11s - 24ms/st - ETA: 11s - 24ms/st - ETA: 10s - 24ms/st - ETA: 10s - 24ms/st - ETA: 10s - 24ms/st - ETA: 10s - 24ms/st - ETA: 10s - 24ms/st - ETA: 10s - 24ms/st - ETA: 10s - 24ms/st - ETA: 10s - 24ms/st - ETA: 10s - 24ms/st - ETA: 10s - 24ms/st - ETA: 10s - 24ms/st - ETA: 10s - 24ms/st - ETA: 10s - 24ms/st - ETA: 10s - 24ms/st - ETA: 10s - 24ms/st - ETA: 10s - 24ms/st - ETA: 10s - 24ms/st - ETA: 10s - 24ms/st - ETA: 10s - 23ms/st - ETA: 10s - 24ms/st - ETA: 9s - 24ms/step - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 9s - 24ms/ste - ETA: 8s - 24ms/ste - ETA: 8s - 24ms/ste - ETA: 8s - 24ms/ste - ETA: 8s - 24ms/ste - ETA: 8s - 24ms/ste - ETA: 8s - 24ms/ste - ETA: 8s - 24ms/ste - ETA: 8s - 24ms/ste - ETA: 8s - 24ms/ste - ETA: 8s - 24ms/ste - ETA: 8s - 24ms/ste - ETA: 8s - 24ms/ste - ETA: 8s - 24ms/ste - ETA: 8s - 24ms/ste - ETA: 8s - 24ms/ste - ETA: 8s - 24ms/ste - ETA: 8s - 24ms/ste - ETA: 8s - 24ms/ste - ETA: 8s - 24ms/ste - ETA: 8s - 24ms/ste - ETA: 7s - 24ms/ste - ETA: 7s - 24ms/ste - ETA: 7s - 24ms/ste - ETA: 7s - 24ms/ste - ETA: 7s - 24ms/ste - ETA: 7s - 24ms/ste - ETA: 7s - 24ms/ste - ETA: 7s - 24ms/ste - ETA: 7s - 24ms/ste - ETA: 7s - 24ms/ste - ETA: 7s - 24ms/ste - ETA: 7s - 24ms/ste - ETA: 7s - 24ms/ste - ETA: 7s - 24ms/ste - ETA: 7s - 24ms/ste - ETA: 7s - 24ms/ste - ETA: 7s - 24ms/ste - ETA: 7s - 24ms/ste - ETA: 7s - 24ms/ste - ETA: 7s - 24ms/ste - ETA: 7s - 24ms/ste - ETA: 6s - 24ms/ste - ETA: 6s - 24ms/ste - ETA: 6s - 24ms/ste - ETA: 6s - 24ms/ste - ETA: 6s - 24ms/ste - ETA: 6s - 24ms/ste - ETA: 6s - 24ms/ste - ETA: 6s - 24ms/ste - ETA: 6s - 24ms/ste - ETA: 6s - 24ms/ste - ETA: 6s - 24ms/ste - ETA: 6s - 24ms/ste - ETA: 6s - 24ms/ste - ETA: 6s - 24ms/ste - ETA: 6s - 24ms/ste - ETA: 6s - 24ms/ste - ETA: 6s - 24ms/ste - ETA: 6s - 24ms/ste - ETA: 6s - 24ms/ste - ETA: 5s - 24ms/ste - ETA: 5s - 24ms/ste - ETA: 5s - 24ms/ste - ETA: 5s - 24ms/ste - ETA: 5s - 24ms/ste - ETA: 5s - 24ms/ste - ETA: 5s - 24ms/ste - ETA: 5s - 24ms/ste - ETA: 5s - 24ms/ste - ETA: 5s - 24ms/ste - ETA: 5s - 24ms/ste - ETA: 5s - 24ms/ste - ETA: 5s - 24ms/ste - ETA: 5s - 24ms/ste - ETA: 5s - 24ms/ste - ETA: 5s - 24ms/ste - ETA: 5s - 24ms/ste - ETA: 5s - 24ms/ste - ETA: 5s - 24ms/ste - ETA: 5s - 24ms/ste - ETA: 4s - 24ms/ste - ETA: 4s - 24ms/ste - ETA: 4s - 24ms/ste - ETA: 4s - 24ms/ste - ETA: 4s - 24ms/ste - ETA: 4s - 24ms/ste - ETA: 4s - 24ms/ste - ETA: 4s - 24ms/ste - ETA: 4s - 24ms/ste - ETA: 4s - 24ms/ste - ETA: 4s - 24ms/ste - ETA: 4s - 24ms/ste - ETA: 4s - 24ms/ste - ETA: 4s - 24ms/ste - ETA: 4s - 24ms/ste - ETA: 4s - 24ms/ste - ETA: 4s - 24ms/ste - ETA: 4s - 24ms/ste - ETA: 4s - 24ms/ste - ETA: 4s - 24ms/ste - ETA: 4s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 3s - 24ms/ste - ETA: 2s - 24ms/ste - ETA: 2s - 24ms/ste - ETA: 2s - 24ms/ste - ETA: 2s - 24ms/ste - ETA: 2s - 24ms/ste - ETA: 2s - 24ms/ste - ETA: 2s - 24ms/ste - ETA: 2s - 24ms/ste - ETA: 2s - 24ms/ste - ETA: 2s - 24ms/ste - ETA: 2s - 24ms/ste - ETA: 2s - 24ms/ste - ETA: 2s - 24ms/ste - ETA: 2s - 24ms/ste - ETA: 2s - 24ms/ste - ETA: 2s - 24ms/ste - ETA: 2s - 24ms/ste - ETA: 2s - 24ms/ste - ETA: 2s - 24ms/ste - ETA: 2s - 24ms/ste - ETA: 2s - 24ms/ste - ETA: 1s - 24ms/ste - ETA: 1s - 24ms/ste - ETA: 1s - 24ms/ste - ETA: 1s - 24ms/ste - ETA: 1s - 24ms/ste - ETA: 1s - 24ms/ste - ETA: 1s - 24ms/ste - ETA: 1s - 24ms/ste - ETA: 1s - 24ms/ste - ETA: 1s - 24ms/ste - ETA: 1s - 24ms/ste - ETA: 1s - 24ms/ste - ETA: 1s - 24ms/ste - ETA: 1s - 24ms/ste - ETA: 1s - 24ms/ste - ETA: 1s - 24ms/ste - ETA: 1s - 24ms/ste - ETA: 1s - 24ms/ste - ETA: 1s - 24ms/ste - ETA: 1s - 24ms/ste - ETA: 0s - 24ms/ste - ETA: 0s - 24ms/ste - ETA: 0s - 24ms/ste - ETA: 0s - 24ms/ste - ETA: 0s - 24ms/ste - ETA: 0s - 24ms/ste - ETA: 0s - 24ms/ste - ETA: 0s - 24ms/ste - ETA: 0s - 24ms/ste - ETA: 0s - 24ms/ste - ETA: 0s - 24ms/ste - ETA: 0s - 24ms/ste - ETA: 0s - 24ms/ste - ETA: 0s - 24ms/ste - ETA: 0s - 24ms/ste - ETA: 0s - 24ms/ste - ETA: 0s - 24ms/ste - ETA: 0s - 24ms/ste - ETA: 0s - 24ms/ste - ETA: 0s - 24ms/ste - ETA: 0s - 24ms/ste - 24ms/step          
+Predict samples: 83599
+进阶优化
+可以尝试paddlenlp.seq2vec中其它模型，观察模型效果。
+
+预训练模型： 鉴于目前预训练模型ERNIE/BERT对语义有着更强大的表征意义，我们可以通过更换为预训练模型完成该分类任务。
+
+PaddleNLP提供了许多中文预训练模型如ERNIE、ERNIE-Tiny、BERT、RoBERTa、Electra等预训练模型，也内置了各种预训练模型用于文本分类Fine-tune常用网络。可参考PaddleNLP AI Studio项目学习试用预训练模型。
+
+如：使用ERNIE Fine-tune文本分类任务：参考项目
+
+此外，还可调用paddlenlp.embeddings接口，使用预训练好的词向量初始化embedding，加快模型收敛速度：参考项目
+
+In [11]
+from paddlenlp.transformers import ErnieForSequenceClassification, ErnieTokenizer
+
+model = ErnieForSequenceClassification.from_pretrained("ernie-1.0", num_classes=len(train_ds.label_list))
+tokenizer = ErnieTokenizer.from_pretrained("ernie-1.0")
+[2024-08-15 19:30:21,865] [    INFO] - Downloading https://paddlenlp.bj.bcebos.com/models/transformers/ernie/ernie_v1_chn_base.pdparams and saved to /home/aistudio/.paddlenlp/models/ernie-1.0
+[2024-08-15 19:30:21,868] [    INFO] - Downloading ernie_v1_chn_base.pdparams from https://paddlenlp.bj.bcebos.com/models/transformers/ernie/ernie_v1_chn_base.pdparams
+100%|██████████| 392507/392507 [00:15<00:00, 25027.85it/s]
+[2024-08-15 19:30:39,646] [    INFO] - Downloading vocab.txt from https://paddlenlp.bj.bcebos.com/models/transformers/ernie/vocab.txt
+100%|██████████| 90/90 [00:00<00:00, 8480.00it/s]
+加入交流群，一起学习吧
+现在就加入PaddleNLP的QQ技术交流群，一起交流NLP技术吧！
+
